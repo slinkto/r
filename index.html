@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Redirect Page</title>
+    <meta charset="UTF-8">
+    <script>
+        // Function to fetch the YAML file and parse it
+        async function fetchRedirects() {
+            try {
+                const response = await fetch('redir.yaml'); // Fetch the YAML file
+                if (!response.ok) throw new Error('Network response was not ok');
+                const text = await response.text(); // Read file content as text
+                return parseYamlLikeFile(text); // Parse the content
+            } catch (error) {
+                console.error('Error loading or parsing the YAML file:', error);
+            }
+        }
+
+        // Function to parse the YAML content and handle options
+        function parseYamlLikeFile(text) {
+            const redirects = {};
+            const lines = text.split('\n'); // Split file into lines
+            let currentKey = null;
+            let globalSettings = {};
+
+            lines.forEach(line => {
+                line = line.trim();
+
+                // Ignore empty lines and comment lines
+                if (!line || line.startsWith('#')) return;
+
+                if (!line.startsWith('-')) {
+                    // Process key: value pairs
+                    const colonIndex = line.indexOf(':');
+                    if (colonIndex !== -1) {
+                        const key = line.substring(0, colonIndex).trim();
+                        const value = line.substring(colonIndex + 1).trim();
+                        currentKey = key;
+
+                        if (key === 'global') {
+                            globalSettings = {};  // Clear globalSettings when 'global' key is encountered
+                        } else {
+                            redirects[key] = {
+                                url: key === 'default' ? value : value,
+                                delay: null,
+                                alias: [],
+                                prehtml: null,
+                                requireButton: 'disabled', // Default state
+                                cssPrehtml: '',
+                                cssButton: '',
+                                disabledOptions: []
+                            };
+                        }
+                    }
+                } else if (currentKey) {
+                    // Handle options
+                    const optionLine = line.substring(1).trim();
+                    const colonIndex = optionLine.indexOf(':');
+                    if (colonIndex !== -1) {
+                        const optionKey = optionLine.substring(0, colonIndex).trim().toLowerCase();
+                        const optionValue = optionLine.substring(colonIndex + 1).trim();
+
+                        const targetObject = currentKey === 'global' ? globalSettings : redirects[currentKey];
+
+                        if (optionKey === 'delay') {
+                            const delayValue = parseInt(optionValue);
+                            if (!isNaN(delayValue)) {
+                                targetObject.delay = delayValue;
+                            }
+                        } else if (optionKey === 'alias') {
+                            targetObject.alias = optionValue.split(',').map(a => a.trim());
+                        } else if (optionKey === 'prehtml') {
+                            targetObject.prehtml = optionValue.replace(/^['"]|['"]$/g, '');
+                        } else if (optionKey === 'require continue button') {
+                            const value = optionValue.trim().toLowerCase();
+                            if (['true', 'false', 'disabled'].includes(value)) {
+                                targetObject.requireButton = value;
+                            }
+                        } else if (optionKey === 'css prehtml') {
+                            targetObject.cssPrehtml = optionValue.replace(/^['"]|['"]$/g, '');
+                        } else if (optionKey === 'css button') {
+                            targetObject.cssButton = optionValue.replace(/^['"]|['"]$/g, '');
+                        } else if (optionKey === 'disable') {
+                            targetObject.disabledOptions = optionValue.split(',').map(a => a.trim()); // Split by comma and trim spaces
+                        } else {
+                            // Unknown option
+                        }
+                    }
+                }
+            });
+
+            // Apply global settings to keys that don't have specific settings
+            for (let key in redirects) {
+                if (key === 'global') continue;  // Skip global itself
+                const item = redirects[key];
+                const disabledOptions = item.disabledOptions || [];
+
+                for (let setting in globalSettings) {
+                    // Only apply global setting if it's not explicitly disabled and not already set
+                    if (!disabledOptions.includes(setting) && (item[setting] === null || item[setting] === undefined)) {
+                        item[setting] = globalSettings[setting];
+                    }
+                }
+            }
+
+            return redirects;
+        }
+
+        // Function to get the hash value (everything after the #)
+        function getHashValue() {
+            return window.location.hash ? window.location.hash.substring(1) : ''; // Remove the # symbol
+        }
+
+        // Function to perform the redirection based on the hash and parsed content
+        async function redirectBasedOnHash() {
+            const hashValue = getHashValue(); // Get the current hash value
+            const redirects = await fetchRedirects();
+
+            if (!redirects) {
+                console.error('No redirects available.');
+                return;
+            }
+
+            // Try to find a matching key or alias
+            let redirectItem = redirects[hashValue];
+            if (!redirectItem) {
+                redirectItem = Object.values(redirects).find(item => item.alias && item.alias.includes(hashValue));
+            }
+            if (!redirectItem) {
+                redirectItem = redirects['default']; // Fallback to default if no match found
+                if (!redirectItem) {
+                    console.error('No valid target found for the given hash, and no default specified.');
+                    return;
+                }
+            }
+
+            handleRedirection(redirectItem, hashValue);
+        }
+
+        // Function to handle redirection, including delay, prehtml, button, and CSS
+        function handleRedirection(redirectItem, key) {
+            if (!redirectItem.url) {
+                console.error('No URL specified for redirection.');
+                return;
+            }
+
+            const targetUrl = redirectItem.url;
+            const delay = redirectItem.delay ? redirectItem.delay * 1000 : 0; // Convert to milliseconds
+            const prehtml = redirectItem.prehtml ? redirectItem.prehtml.replace('$0', key).replace('$1', targetUrl) : '';
+            const requireButton = redirectItem.requireButton || 'disabled';
+
+            if (prehtml) {
+                const prehtmlDiv = document.createElement('div');
+                prehtmlDiv.innerHTML = prehtml;
+                if (redirectItem.cssPrehtml) {
+                    prehtmlDiv.style.cssText = redirectItem.cssPrehtml; // Apply CSS to prehtml
+                }
+                document.body.appendChild(prehtmlDiv); // Insert prehtml before redirect
+            }
+
+            if (requireButton === 'true') {
+                // Show button, do not auto-redirect
+                const button = document.createElement('button');
+                button.textContent = "Continue";
+                button.onclick = () => window.location.replace(targetUrl);
+                if (redirectItem.cssButton) {
+                    button.style.cssText = redirectItem.cssButton; // Apply CSS to button
+                }
+                document.body.appendChild(button);
+            } else if (requireButton === 'false') {
+                // Show button, auto-redirect after delay
+                const button = document.createElement('button');
+                button.textContent = "Continue";
+                button.onclick = () => window.location.replace(targetUrl);
+                if (redirectItem.cssButton) {
+                    button.style.cssText = redirectItem.cssButton; // Apply CSS to button
+                }
+                document.body.appendChild(button);
+
+                setTimeout(() => {
+                    window.location.replace(targetUrl);
+                }, delay);
+            } else {
+                // Auto-redirect after delay, no button
+                setTimeout(() => {
+                    window.location.replace(targetUrl);
+                }, delay);
+            }
+        }
+
+        // Execute the redirection when the page loads
+        window.onload = redirectBasedOnHash;
+    </script>
+</head>
+<body>
+</body>
+</html>
